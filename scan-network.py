@@ -9,7 +9,7 @@ def discover_hosts(network):
     scanner = nmap.PortScanner()
     print(f"[+] Scanning network {network} for active hosts...")
     # Ping scan to discover hosts (no port scan)
-    scanner.scan(hosts=network, arguments='-sn')
+    scanner.scan(hosts=network, arguments='-sn --disable-arp-ping')
     hosts = list(scanner.all_hosts())
     print(f"    Found hosts: {hosts}")
     return hosts
