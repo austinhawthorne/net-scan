@@ -2,17 +2,17 @@ A simple set of scripts that setups one host with "vulnerable" services and anot
 
 'setup-vuln.py' can be run on a host to setup FTP, SSH, and HTTP services that have certain signatures that match known vulnerabilities.
 
-'''
+```
 client2:~/net-scan $ python setup-vuln.py 
 [SSH] Server running on 0.0.0.0:2222
 [FTP] Server running on 0.0.0.0:2121
 Dummy vulnerable services are running. Press Ctrl+C to stop.
 [HTTP] Server running on 0.0.0.0:8080
-'''
+```
 
 'scan-network.py' runs from a separate host, on the same subnet or different subnet, to discover all hosts and run scans of each discovered host.  Once the scan is done, it performs a lookup to the National Vulnerability Database (NVD).  Running this script will prompt you for the target network to scan and your NVD API key.
 
-'''
+```
 client1:~/net-scan $ sudo python scan-network.py 
 Enter comma-separated networks to scan (e.g., 192.168.1.0/24,10.0.0.0/24): 10.0.3.0/24
 Enter your NVD API key: REDACTED 
@@ -65,4 +65,4 @@ Host: 10.0.3.180
       Vulnerabilities: CVE-2016-3115, CVE-2015-8325
     Port 8080: http (Apache httpd) v2.4.49
       Vulnerabilities: None found
-'''
+```
