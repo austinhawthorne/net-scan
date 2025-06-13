@@ -1,5 +1,7 @@
 A simple set of scripts that setups one host with "vulnerable" services and another to scan hosts for vulnerabilities.  Used for testing visibility in networks to detect such activity.
 
+Pre-Requisite:  You need to get an NVD API key from here: https://nvd.nist.gov/developers/request-an-api-key
+
 'setup-vuln.py' can be run on a host to setup FTP, SSH, and HTTP services that have certain signatures that match known vulnerabilities.
 
 ```
