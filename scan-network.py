@@ -2,6 +2,7 @@
 import nmap
 import requests
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def discover_hosts(network):
     """
@@ -9,10 +10,9 @@ def discover_hosts(network):
     """
     scanner = nmap.PortScanner()
     print(f"[+] Scanning network {network} for active hosts...")
-    # Ping scan to discover hosts (no port scan)
     scanner.scan(hosts=network, arguments='-sn --disable-arp-ping')
     hosts = list(scanner.all_hosts())
-    print(f"    Found hosts: {hosts}")
+    print(f"    Found hosts on {network}: {hosts}")
     return hosts
 
 def scan_host(host):
@@ -21,67 +21,50 @@ def scan_host(host):
     """
     scanner = nmap.PortScanner()
     print(f"[+] Scanning host {host} for open ports and OS detection...")
-    # Use -sV for version detection and -O for OS detection (requires elevated privileges)
-    arguments = '-sV -O'
-    scanner.scan(host, arguments=arguments)
+    scanner.scan(host, arguments='-sV -O')
     
-    host_info = {'ip': host}
-
-    # OS detection: nmap returns a list of possible OS matches.
+    info = {'ip': host}
+    # OS detection
     os_matches = scanner[host].get('osmatch', [])
     if os_matches:
-        # Taking the best match (first one)
-        os_match = os_matches[0]
-        host_info['os'] = os_match['name']
-        host_info['os_accuracy'] = os_match['accuracy']
-        host_info['os_version'] = os_match.get('version', '')
+        best = os_matches[0]
+        info.update({
+            'os': best['name'],
+            'os_accuracy': best['accuracy'],
+            'os_version': best.get('version', '')
+        })
     else:
-        host_info['os'] = "Unknown"
-        host_info['os_version'] = ""
-    
-    # Collect open TCP ports and associated service info
+        info.update({'os': 'Unknown', 'os_version': ''})
+
+    # Service/version detection
     services = []
-    if 'tcp' in scanner[host]:
-        for port, port_info in scanner[host]['tcp'].items():
-            if port_info.get('state') == 'open':
-                service = {
-                    'port': port,
-                    'name': port_info.get('name', ''),
-                    'product': port_info.get('product', ''),
-                    'version': port_info.get('version', '')
-                }
-                services.append(service)
-    host_info['services'] = services
-    
-    return host_info
+    for port, port_info in scanner[host].get('tcp', {}).items():
+        if port_info.get('state') == 'open':
+            services.append({
+                'port': port,
+                'name': port_info.get('name', ''),
+                'product': port_info.get('product', ''),
+                'version': port_info.get('version', '')
+            })
+    info['services'] = services
+    return info
 
 def lookup_vulnerabilities(keyword, api_key):
     """
     Lookup vulnerabilities using the NVD API v2.
-    The keyword should typically include the service or OS name and its version.
     """
     print(f"[+] Looking up vulnerabilities for '{keyword}' ...")
     url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-    # Using the new parameter 'keywordSearch'
     params = {"keywordSearch": keyword}
     headers = {"apiKey": api_key}
-    
     try:
-        response = requests.get(url, headers=headers, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            # In the v2 API, vulnerabilities are under the 'vulnerabilities' key.
-            cve_items = data.get("vulnerabilities", [])
-            vulnerabilities = []
-            for item in cve_items:
-                cve_id = item["cve"]["id"]
-                vulnerabilities.append(cve_id)
-            return vulnerabilities
-        else:
-            print(f"    NVD API returned status code: {response.status_code}")
-            return []
+        resp = requests.get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        vulns = [item["cve"]["id"] for item in data.get("vulnerabilities", [])]
+        return vulns
     except Exception as e:
-        print(f"    Error during vulnerability lookup: {e}")
+        print(f"    Vulnerability lookup failed for '{keyword}': {e}")
         return []
 
 def generate_report(hosts_info, api_key):
@@ -95,18 +78,16 @@ def generate_report(hosts_info, api_key):
         if host.get('os_version'):
             report += f" (Version: {host['os_version']})"
         report += "\n"
-        
-        # Vulnerability lookup for OS if version information is available.
+
+        # OS vulnerabilities
         if host.get('os') != "Unknown" and host.get('os_version'):
             os_query = f"{host['os']} {host['os_version']}"
             os_vulns = lookup_vulnerabilities(os_query, api_key)
-            if os_vulns:
-                report += f"  OS Vulnerabilities: {', '.join(os_vulns)}\n"
-            else:
-                report += "  OS Vulnerabilities: None found\n"
+            report += f"  OS Vulnerabilities: {', '.join(os_vulns) or 'None found'}\n"
         else:
-            report += "  OS Vulnerabilities: Skipped (insufficient version info)\n"
-        
+            report += "  OS Vulnerabilities: Skipped (insufficient info)\n"
+
+        # Service vulnerabilities
         report += "  Open Services:\n"
         for svc in host.get('services', []):
             svc_line = f"    Port {svc['port']}: {svc['name']}"
@@ -115,39 +96,44 @@ def generate_report(hosts_info, api_key):
             if svc.get('version'):
                 svc_line += f" v{svc['version']}"
             report += svc_line + "\n"
-            
-            # Lookup vulnerabilities for the service if version information is available.
+
             if svc.get('version'):
                 svc_query = f"{svc.get('product','')} {svc['version']}".strip()
-                vulns = lookup_vulnerabilities(svc_query, api_key)
-                if vulns:
-                    report += f"      Vulnerabilities: {', '.join(vulns)}\n"
-                else:
-                    report += "      Vulnerabilities: None found\n"
+                svc_vulns = lookup_vulnerabilities(svc_query, api_key)
+                report += f"      Vulnerabilities: {', '.join(svc_vulns) or 'None found'}\n"
             else:
-                report += "      Vulnerabilities: Skipped (no version info)\n"
+                report += "      Vulnerabilities: Skipped (no version)\n"
         report += "\n"
     return report
 
 def main():
-    # Get comma-separated network ranges from the user.
     networks = input("Enter comma-separated networks to scan (e.g., 192.168.1.0/24,10.0.0.0/24): ")
-    network_list = [net.strip() for net in networks.split(',')]
-    
-    # Get the NVD API key from the user.
-    api_key = input("Enter your NVD API key: ").strip()
-    
-    all_hosts_info = []
-    
-    # Discover hosts and then scan each host in each network.
-    for network in network_list:
-        hosts = discover_hosts(network)
-        for host in hosts:
-            host_info = scan_host(host)
-            all_hosts_info.append(host_info)
-    
-    # Generate and print the final report.
-    report = generate_report(all_hosts_info, api_key)
+    api_key  = input("Enter your NVD API key: ").strip()
+    network_list = [n.strip() for n in networks.split(',')]
+
+    # 1) Discover all hosts in parallel
+    all_hosts = []
+    with ThreadPoolExecutor(max_workers=min(10, len(network_list))) as pool:
+        futures = {pool.submit(discover_hosts, net): net for net in network_list}
+        for fut in as_completed(futures):
+            try:
+                all_hosts.extend(fut.result())
+            except Exception as e:
+                print(f"Error discovering {futures[fut]}: {e}")
+
+    # 2) Scan each host in parallel
+    hosts_info = []
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = {pool.submit(scan_host, host): host for host in all_hosts}
+        for fut in as_completed(futures):
+            host = futures[fut]
+            try:
+                hosts_info.append(fut.result())
+            except Exception as e:
+                print(f"Error scanning host {host}: {e}")
+
+    # 3) Print the combined report
+    report = generate_report(hosts_info, api_key)
     print(report)
 
 if __name__ == "__main__":
